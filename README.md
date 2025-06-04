@@ -1,3 +1,1 @@
 # Security-checker Project 🦺
-
-## 
