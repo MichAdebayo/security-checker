@@ -101,7 +101,7 @@ with st.sidebar:
     # Model selection
     model_id = st.selectbox(
         "🎯 Model Selection",
-        ["ppe-factory-bmdcj/2", "pbe-detection/4"],
+        ["ppe-factory-bmdcj/2", "pbe-detection/4", "safety-pyazl/1"],
         index=1,
         help="Choose the PPE detection model"
     )
