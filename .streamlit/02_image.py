@@ -33,7 +33,8 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# Hidden API credentials
+# Hidden API credentials 
+# créer .env
 MODEL_ID_DEFAULT = "pbe-detection/4"
 API_KEY = "mDauQAfDrFWieIsSqti6"
 
@@ -75,7 +76,7 @@ def get_color_for_class(name: str) -> Tuple[int,int,int]:
     }.get(name.lower(), (128,128,128))
 
 # Perform inference on image
-
+# ajouter la sortie
 def analyze_image(image: np.ndarray, conf_thresh: float, overlap_thresh: float, model_id: str):
     client = get_rf_client()
     resp = client.infer(image, model_id=model_id)
