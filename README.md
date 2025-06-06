@@ -27,7 +27,7 @@ security-checker/
 |--images/                      # Images
         |__logo.webp
 |--.gitignore
-|--docker-compose.yaml          # Fichier de contenaurisation
+|--docker-compose.yaml          # Fichier de conteneurisation
 |--README.md                    # Informations sur le projet
 |__requirements.txt             # Dépendances
 ```

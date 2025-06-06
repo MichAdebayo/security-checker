@@ -1,0 +1,17 @@
+services:
+  .streamlit:
+    image: python:3.10-slim
+    container_name: streamlit-container
+    working_dir: /app/.streamlit
+    volumes:
+      - .:/app
+    ports:
+      - "8501:8501"
+    command:
+      - sh
+      - -c
+      - |
+        apt-get update &&
+        apt-get install -y libgl1-mesa-glx libglib2.0-0 &&
+        pip install --no-cache-dir -r /app/requirements.txt &&
+        streamlit run app.py --server.port=8501 --server.address=0.0.0.0
