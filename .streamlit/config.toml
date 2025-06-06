@@ -1,0 +1,7 @@
+[theme]
+base="dark"
+primaryColor="#FF9800"         # Safety orange
+backgroundColor="#22272e"
+secondaryBackgroundColor="#31363f"
+textColor="#FFFFFF"
+font="sans serif"

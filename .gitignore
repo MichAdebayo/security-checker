@@ -82,4 +82,7 @@ pip-selfcheck.json
 .history
 .ionide
 
+# Pycache
+__pycache__/
+
 # End of https://www.toptal.com/developers/gitignore/api/macos,venv,linux,visualstudiocode
