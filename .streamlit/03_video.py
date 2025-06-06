@@ -83,7 +83,7 @@ def analyze_frame(image: np.ndarray, client, model_id: str, conf_thresh: float, 
         cv2.rectangle(out, (x1,y1), (x2,y2), col, 2)
         label = f"{p['class']} ({p['confidence']:.2f})"
         sz = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
-        cv2.rectangle(out, (x1,y1-sz[1]-8), (x1+sz[0], y1), col, -1)
+        cv2.rectangle(out, (x1,y1-sz[1]-8), (x1+sz[0], y1), col, -1) # type: ignore
         cv2.putText(out, label, (x1, y1-4), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 2)
     return filtered, out
 
@@ -209,9 +209,15 @@ if video_file:
                 d['timestamp'] = st.session_state.video_frame_idx / fps if fps else 0
                 st.session_state.detections_live.append(d)
         frame_placeholder.image(display_frame, channels="BGR", caption=f"Frame {st.session_state.video_frame_idx+1}/{frame_count}", use_container_width=True)
-        # Live metrics
-        metrics = calculate_metrics(st.session_state.detections_live)
-        metrics_placeholder.markdown(f"**🪖 Helmets:** {metrics['helmets']}    **🦺 Vests:** {metrics['vests']}    **⚠️ Violations:** {metrics['violations']}    **✅ Compliance:** {metrics['compliance']:.1f}%")
+        # Live metrics (remove cumulative counting, just show frame info)
+        if st.session_state.last_detections:
+            frame_helmets = sum(1 for d in st.session_state.last_detections if d['class'].lower() == 'helmet')
+            frame_no_helmets = sum(1 for d in st.session_state.last_detections if d['class'].lower() == 'no-helmet')
+            frame_vests = sum(1 for d in st.session_state.last_detections if 'vest' in d['class'].lower() and 'no-' not in d['class'].lower())
+            frame_no_vests = sum(1 for d in st.session_state.last_detections if d['class'].lower() == 'no-safety-vest')
+            metrics_placeholder.markdown(f"**Frame {st.session_state.video_frame_idx+1}/{frame_count}**  🪖 Helmets: {frame_helmets}  ❌ No Helmet: {frame_no_helmets}  🦺 Vests: {frame_vests}  ❌ No Vest: {frame_no_vests}")
+        else:
+            metrics_placeholder.markdown(f"**Frame {st.session_state.video_frame_idx+1}/{frame_count}**  No detections.")
         progress_bar.progress((st.session_state.video_frame_idx+1)/frame_count)
         st.session_state.video_frame_idx += 1
         time.sleep(frame_delay)
