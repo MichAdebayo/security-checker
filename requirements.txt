@@ -1,16 +1,11 @@
-# Core Streamlit dependencies
+# Requirements for local YOLO model inference
+ultralytics>=8.0.0,<9.0.0
+torch>=1.8.0,<3.0.0
+torchvision>=0.9.0,<1.0.0
+opencv-python>=4.5.0,<5.0.0
+numpy>=1.21.0,<2.0.0
 streamlit
 streamlit-webrtc
-
-# Computer vision and ML
-opencv-python
-ultralytics
-numpy
-
-# Utility libraries  
-pandas
-python-dotenv
 watchdog
-
-# Note: This is the simplified local-only version
-# No API dependencies (inference-sdk, requests) needed
+python-dotenv
+pandas

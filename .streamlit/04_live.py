@@ -276,45 +276,64 @@ def get_display_name(class_name: str) -> str:
     return name_mapping.get(class_name, class_name)
 
 def calculate_compliance_percentage(detections: List) -> float:
-    """Calculate PPE compliance percentage based on current detections"""
+    """Calculate PPE compliance percentage based on current detections.
+    Hybrid approach: Uses positive PPE detections OR negative violations 
+    to ensure consistent percentage calculations regardless of detection type."""
     if not detections:
         return 100.0  # No detections = assume compliant
-    
+
     # Count people using the raw YOLO class name
     people_count = sum(1 for d in detections if d['class'] == 'Person')
-    
+
     if people_count == 0:
         return 100.0  # No people detected
-    
+
     # Count positive PPE detections using raw YOLO class names
     helmets = sum(1 for d in detections if d['class'] in ['Hardhat', 'Helmet'])
     masks = sum(1 for d in detections if d['class'] == 'Mask')
     safety_vests = sum(1 for d in detections if d['class'] == 'Safety Vest')
-    
-    # Count explicit violations using raw YOLO class names
+
+    # Count negative PPE detections (violations)
     no_helmets = sum(1 for d in detections if d['class'] in ['NO-Hardhat', 'NO-Helmet'])
     no_masks = sum(1 for d in detections if d['class'] == 'NO-Mask')
     no_safety_vests = sum(1 for d in detections if d['class'] == 'NO-Safety Vest')
-    
-    # Calculate compliance per person (each person needs helmet, mask, safety vest)
+
+    # Hybrid logic: try positive PPE first, fallback to violations if no positive PPE
+    total_positive_ppe = helmets + masks + safety_vests
     total_violations = no_helmets + no_masks + no_safety_vests
-    
-    # For missing PPE (when person is detected but no corresponding PPE)
-    missing_helmets = max(0, people_count - helmets - no_helmets)
-    missing_masks = max(0, people_count - masks - no_masks) 
-    missing_vests = max(0, people_count - safety_vests - no_safety_vests)
-    
-    total_violations += missing_helmets + missing_masks + missing_vests
-    
-    # Maximum possible violations = people_count * 3 (helmet, mask, vest per person)
-    max_possible_violations = people_count * 3
-    
-    # Calculate compliance percentage
-    if max_possible_violations == 0:
-        return 100.0
-    
-    compliance = max(0, ((max_possible_violations - total_violations) / max_possible_violations) * 100)
-    return compliance
+
+    if total_positive_ppe > 0:
+        ppe_items_present = calculated_compliance_percentage(
+            helmets, masks, safety_vests
+        )
+        compliance = (ppe_items_present / 3.0) * 100
+    elif total_violations > 0:
+        violation_categories = (
+            calculated_compliance_percentage(
+                no_helmets, no_masks, no_safety_vests
+            )
+        )
+        # Inverse calculation: 3 violations = 0%, 2 violations = 33.3%, 1 violation = 66.7%, 0 violations = 100%
+        compliance = ((3 - violation_categories) / 3.0) * 100
+    else:
+        # No PPE or violations detected - assume compliant
+        compliance = 100.0
+
+    return round(compliance, 1)
+
+
+# calculate_compliance_percentage function
+def calculated_compliance_percentage(arg0, arg1, arg2):
+        # Calculate based on positive PPE items (original logic)
+    result = 0
+    if arg0 > 0:
+        result += 1
+    if arg1 > 0:
+        result += 1
+    if arg2 > 0:
+        result += 1
+
+    return result
 
 def run_yolo_inference(image: np.ndarray, conf_thresh: float, model) -> Tuple[List, np.ndarray]:
     """Run YOLO inference on image with improved bounding box precision"""
@@ -773,7 +792,7 @@ with stats_col:
                 </div>
                 """, unsafe_allow_html=True)
             
-            # Count detections
+            # Count detections for PPE-related classes only (exclude Safety Cone)
             ppe_counts = {
                 "Person": 0,
                 "Helmet": 0,
@@ -781,10 +800,7 @@ with stats_col:
                 "Safety Vest": 0,
                 "NO-Helmet": 0,
                 "NO-Mask": 0,
-                "NO-Safety Vest": 0,
-                "Safety Cone": 0,
-                "Machinery": 0,
-                "Vehicle": 0
+                "NO-Safety Vest": 0
             }
             
             # Process each detection
@@ -792,15 +808,40 @@ with stats_col:
                 raw_class = detection.get('class', '')
                 display_name = get_display_name(raw_class)
                 
-                # Debug: Print what we're processing
-                if st.session_state.get('debug_counts', False):
-                    st.write(f"Processing: {raw_class} → {display_name}")
-                
+                # Only count PPE-related classes (ignore Vehicle and Machinery)
                 if display_name in ppe_counts:
                     ppe_counts[display_name] += 1
+            
+            # Debug compliance calculation if debug mode is enabled
+            if st.session_state.get('debug_counts', False):
+                st.write("**Debug: Hybrid Compliance Calculation**")
+                
+                # Positive PPE counts
+                helmets = ppe_counts["Helmet"]
+                masks = ppe_counts["Mask"] 
+                safety_vests = ppe_counts["Safety Vest"]
+                total_positive = helmets + masks + safety_vests
+                
+                # Negative PPE counts (violations)
+                no_helmets = ppe_counts["NO-Helmet"]
+                no_masks = ppe_counts["NO-Mask"]
+                no_safety_vests = ppe_counts["NO-Safety Vest"]
+                total_violations = no_helmets + no_masks + no_safety_vests
+                
+                st.write(f"**Positive PPE:** Helmet={helmets}, Mask={masks}, Safety Vest={safety_vests} (Total: {total_positive})")
+                st.write(f"**Violations:** NO-Helmet={no_helmets}, NO-Mask={no_masks}, NO-Safety Vest={no_safety_vests} (Total: {total_violations})")
+                
+                # Show which calculation method was used
+                if total_positive > 0:
+                    positive_categories = sum([1 for x in [helmets, masks, safety_vests] if x > 0])
+                    st.write(f"**Method:** Positive PPE calculation ({positive_categories}/3 categories = {compliance:.1f}%)")
+                elif total_violations > 0:
+                    violation_categories = sum([1 for x in [no_helmets, no_masks, no_safety_vests] if x > 0])
+                    st.write(f"**Method:** Violations calculation ({violation_categories}/3 violations = {compliance:.1f}%)")
                 else:
-                    # Handle unexpected classes
-                    st.warning(f"Unknown class: {raw_class} → {display_name}")
+                    st.write(f"**Method:** No PPE/violations detected = {compliance:.1f}%")
+                    
+                st.write(f"**Raw detections:** {[d['class'] for d in detections]}")
             
             # Show quick metrics
             people = ppe_counts["Person"]
@@ -820,10 +861,9 @@ with stats_col:
             """, unsafe_allow_html=True)
             
             # Display detailed statistics
-            st.markdown('<div class="ppe-stats-container">', unsafe_allow_html=True)
             st.markdown("**Detection Results:**")
             
-            # Define icons and categories for all model classes
+            # Define icons and categories for PPE-related classes only (exclude Safety Cone)
             ppe_categories = [
                 ("Person", "👤", "neutral"),
                 ("Helmet", "⛑️", "positive"),
@@ -831,10 +871,7 @@ with stats_col:
                 ("Safety Vest", "🦺", "positive"),
                 ("NO-Helmet", "🚫⛑️", "negative"),
                 ("NO-Mask", "🚫😷", "negative"),
-                ("NO-Safety Vest", "🚫🦺", "negative"),
-                ("Safety Cone", "🚧", "neutral"),
-                ("Machinery", "⚙️", "neutral"),
-                ("Vehicle", "🚗", "neutral")
+                ("NO-Safety Vest", "🚫🦺", "negative")
             ]
             
             for category, icon, status in ppe_categories:
@@ -848,8 +885,6 @@ with stats_col:
                     <span class="ppe-count">{count}</span>
                 </div>
                 """, unsafe_allow_html=True)
-            
-            st.markdown('</div>', unsafe_allow_html=True)
         else:
             # Show a simple waiting message when no detections
             st.markdown("""

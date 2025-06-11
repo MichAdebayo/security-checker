@@ -78,6 +78,8 @@ pip-selfcheck.json
 !.vscode/launch.json
 !.vscode/extensions.json
 !.vscode/*.code-snippets
+.vscode/
+*.vscode/
 
 # Local History for Visual Studio Code
 .history/
@@ -92,6 +94,7 @@ pip-selfcheck.json
 
 # Pycache
 __pycache__/
+*.pyc
 
 # Local YOLO environment (created by setup script)
 yolo_env/
