@@ -560,13 +560,9 @@ with st.sidebar:
         st.error("❌ Local model not found")
         st.stop()
     
-    # Add debug mode toggle
-    debug_mode = st.checkbox("🔍 Debug Mode", value=False, help="Enable verbose debugging output")
     
     conf_thresh = st.slider("Confidence Threshold", 0.0, 1.0, TRANSFORMER_CONF_THRESH, 0.01, 
                             help="Lower values = more detections, may include false positives. Start with 0.01 for maximum sensitivity.")
-    
-    st.info(f"💡 **Tip:** For testing, try confidence = 0.01 first")
     
     detection_interval = st.slider("Detection Interval (seconds)", 0.1, 2.0, TRANSFORMER_DETECTION_INTERVAL, 0.1, 
                                   help="How often to run detection (lower = more responsive)")
@@ -584,6 +580,14 @@ with st.sidebar:
     # Add instant detection toggle
     instant_detect = st.checkbox("⚡ Instant Detection", value=False, 
                                 help="Run detection on every frame (may slow down stream)")
+    
+    # Add debug counting toggle
+    debug_counts = st.checkbox("🔢 Debug Counting", value=False,
+                              help="Show detailed counting debug information")
+    if debug_counts:
+        st.session_state.debug_counts = True
+    else:
+        st.session_state.debug_counts = False
 
 # Load model
 model = load_yolo_model()
@@ -603,9 +607,7 @@ st.session_state.transformer.set_detection_interval(detection_interval)
 if hasattr(st.session_state.transformer, 'set_persistence_frames'):
     st.session_state.transformer.set_persistence_frames(persistence_frames)
 
-# Add debug and instant detection settings
-if hasattr(st.session_state.transformer, 'debug_mode'):
-    st.session_state.transformer.debug_mode = debug_mode
+# Add instant detection settings
 if hasattr(st.session_state.transformer, 'instant_detect'):
     st.session_state.transformer.instant_detect = instant_detect
 
@@ -628,9 +630,23 @@ with webcam_col:
         st.session_state.transformer.set_detection_interval(detection_interval)
         st.session_state.transformer.set_persistence_frames(persistence_frames)
         
+        # Create a factory function that returns our session state transformer
+        def create_transformer() -> PPEDetectionTransformer:
+            # Create a new transformer with the current settings
+            transformer = PPEDetectionTransformer()
+            transformer.set_model(model)
+            transformer.set_conf_thresh(conf_thresh)
+            transformer.set_detection_interval(detection_interval)
+            transformer.set_persistence_frames(persistence_frames)
+            transformer.instant_detect = instant_detect
+            
+            # Store reference in session state for statistics access
+            st.session_state.active_transformer = transformer
+            return transformer
+        
         webrtc_ctx = webrtc_streamer(
             key="ppe-detection-stream",
-            video_transformer_factory=PPEDetectionTransformer,
+            video_processor_factory=create_transformer,
             rtc_configuration={
                 "iceServers": [
                     {"urls": ["stun:stun.l.google.com:19302"]},
@@ -647,15 +663,14 @@ with webcam_col:
         # Display connection status with improved debugging
         if webrtc_ctx.state.playing:
             st.success("🟢 Camera stream active")
-            if webrtc_ctx.video_transformer:
-                transformer = webrtc_ctx.video_transformer
+            if webrtc_ctx.video_processor:
+                transformer = webrtc_ctx.video_processor
                 
                 # Update transformer with current settings
                 transformer.set_model(model)
                 transformer.set_conf_thresh(conf_thresh)
                 transformer.set_detection_interval(detection_interval)
                 transformer.set_persistence_frames(persistence_frames)
-                transformer.debug_mode = debug_mode
                 transformer.instant_detect = instant_detect
                 
                 model_status = "✅ Ready" if hasattr(transformer, 'model') and transformer.model is not None else "❌ No Model"
@@ -675,8 +690,8 @@ with webcam_col:
             
         # Add immediate test button
         if st.button("🚀 Force Detection Test", help="Test detection on current frame"):
-            if webrtc_ctx.video_transformer and hasattr(webrtc_ctx.video_transformer, 'model'):
-                transformer = webrtc_ctx.video_transformer
+            if webrtc_ctx.video_processor and hasattr(webrtc_ctx.video_processor, 'model'):
+                transformer = webrtc_ctx.video_processor
                 if transformer.model:
                     st.success("Model is available in transformer!")
                     st.write(f"Confidence threshold: {transformer.conf_thresh}")
@@ -721,25 +736,28 @@ with stats_col:
     """, unsafe_allow_html=True)
     
     # Manual refresh button
-    col_refresh1, col_refresh2 = st.columns([1, 1])
-    with col_refresh1:
-        if st.button("🔄 Refresh Stats", key="refresh_stats", help="Force refresh statistics"):
-            st.rerun()
-    with col_refresh2:
-        # Remove auto-refresh checkbox that was causing infinite loops
-        st.write("Manual refresh only")
+    if st.button("🔄 Refresh Stats", key="refresh_stats", help="Force refresh statistics"):
+        st.rerun()
     
-    # Live metrics display
-    if 'webrtc_ctx' in locals() and webrtc_ctx.state.playing and webrtc_ctx.video_transformer:
-        transformer = webrtc_ctx.video_transformer
+    # Live metrics display - Use both webrtc transformer and session state
+    active_transformer = None
+    if 'webrtc_ctx' in locals() and webrtc_ctx.state.playing and webrtc_ctx.video_processor:
+        active_transformer = webrtc_ctx.video_processor
+    elif 'active_transformer' in st.session_state:
+        active_transformer = st.session_state.active_transformer
+    elif 'transformer' in st.session_state:
+        active_transformer = st.session_state.transformer
+    
+    if active_transformer and hasattr(active_transformer, 'current_detections'):
+        detections = active_transformer.current_detections
         
-        if hasattr(transformer, 'current_detections') and transformer.current_detections:
-            detections = transformer.current_detections
+        # Only show detailed statistics if there are actual detections
+        if detections and len(detections) > 0:
             
-            # Calculate compliance
+            # Calculate and show compliance
             compliance = calculate_compliance_percentage(detections)
             
-            # Show compliance alert or success
+            # Show compliance alert or success  
             if compliance < 60:
                 st.markdown(f"""
                 <div class="compliance-alert">
@@ -755,7 +773,7 @@ with stats_col:
                 </div>
                 """, unsafe_allow_html=True)
             
-            # Count detections - include all model classes
+            # Count detections
             ppe_counts = {
                 "Person": 0,
                 "Helmet": 0,
@@ -769,27 +787,37 @@ with stats_col:
                 "Vehicle": 0
             }
             
+            # Process each detection
             for detection in detections:
-                display_name = get_display_name(detection.get('class', ''))
+                raw_class = detection.get('class', '')
+                display_name = get_display_name(raw_class)
+                
+                # Debug: Print what we're processing
+                if st.session_state.get('debug_counts', False):
+                    st.write(f"Processing: {raw_class} → {display_name}")
+                
                 if display_name in ppe_counts:
                     ppe_counts[display_name] += 1
+                else:
+                    # Handle unexpected classes
+                    st.warning(f"Unknown class: {raw_class} → {display_name}")
             
             # Show quick metrics
             people = ppe_counts["Person"]
             violations = ppe_counts["NO-Helmet"] + ppe_counts["NO-Mask"] + ppe_counts["NO-Safety Vest"]
             
-            st.markdown("""
+            st.markdown(f"""
             <div class="quick-metrics">
                 <div class="quick-metric">
-                    <div class="metric-value">👥 {}</div>
+                    <div class="metric-value">👥 {people}</div>
                     <div class="metric-label">People Detected</div>
                 </div>
                 <div class="quick-metric">
-                    <div class="metric-value">⚠️ {}</div>
+                    <div class="metric-value">⚠️ {violations}</div>
                     <div class="metric-label">Violations</div>
                 </div>
             </div>
-            """.format(people, violations), unsafe_allow_html=True)
+            """, unsafe_allow_html=True)
             
             # Display detailed statistics
             st.markdown('<div class="ppe-stats-container">', unsafe_allow_html=True)
@@ -822,131 +850,20 @@ with stats_col:
                 """, unsafe_allow_html=True)
             
             st.markdown('</div>', unsafe_allow_html=True)
-            
-            # Show debug info in expandable section
-            with st.expander("🔍 Debug Information", expanded=False):
-                st.json({
-                    'detection_count': len(detections),
-                    'raw_classes': [d.get('class', 'unknown') for d in detections],
-                    'compliance': compliance
-                })
-            
-        elif hasattr(transformer, 'current_detections'):
-            # No detections
-            st.markdown(f"""
-            <div class="compliance-good">
-                ✅ NO DETECTIONS<br>
-                <div style="font-size: 1.5rem; margin-top: 0.5rem;">100.0% Compliant</div>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            st.markdown("""
-            <div class="quick-metrics">
-                <div class="quick-metric">
-                    <div class="metric-value">👥 0</div>
-                    <div class="metric-label">People Detected</div>
-                </div>
-                <div class="quick-metric">
-                    <div class="metric-value">⚠️ 0</div>
-                    <div class="metric-label">Violations</div>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
         else:
-            st.warning("🔧 Transformer not properly initialized")
+            # Show a simple waiting message when no detections
+            st.markdown("""
+            <div style="text-align: center; padding: 2rem; color: #666;">
+                📹 <strong>Camera Active</strong><br>
+                <em>Waiting for detections...</em>
+            </div>
+            """, unsafe_allow_html=True)
     else:
         st.info("📷 Start camera stream to see live statistics")
     
     st.markdown('</div>', unsafe_allow_html=True)
 
-# Show live feed status
-st.markdown("---")
-if 'webrtc_ctx' in locals() and hasattr(webrtc_ctx, 'state'):
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        status = "🟢 Active" if webrtc_ctx.state.playing else "⚪ Stopped"
-        st.write(f"**Stream Status:** {status}")
-    with col2:
-        signalling = "🟡 Connected" if webrtc_ctx.state.signalling else "⚪ Disconnected"
-        st.write(f"**Signalling:** {signalling}")
-    with col3:
-        st.write(f"**Model:** {'✅ Loaded' if model else '❌ Error'}")
-
-# Performance test section
-st.markdown("---")
-st.markdown("### 🧪 Model Performance Test")
-
-if st.button("Test Model Performance"):
-    test_image = np.random.randint(0, 255, (640, 480, 3), dtype=np.uint8)
-    
-    with st.spinner("Testing model inference speed..."):
-        start_time = time.time()
-        num_tests = 5
-        for _ in range(num_tests):
-            rgb_image = cv2.cvtColor(test_image, cv2.COLOR_BGR2RGB)
-            results = model(rgb_image, conf=conf_thresh, verbose=False)
-        avg_time = (time.time() - start_time) / num_tests * 1000
-    
-    st.success(f"✅ Model Performance Test Complete!")
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("Average Inference Time", f"{avg_time:.1f}ms")
-    with col2:
-        st.metric("Theoretical Max FPS", f"{1000/avg_time:.1f}")
-    with col3:
-        st.metric("Status", "Ready" if avg_time < 200 else "Slow")
-
-# Model class verification
-st.markdown("---")
-st.markdown("### 🔍 Model Testing & Verification")
-
-col_test1, col_test2 = st.columns(2)
-
-with col_test1:
-    if st.button("Show Model Classes"):
-        if model:
-            st.markdown("**Available YOLO Classes:**")
-            class_info = {}
-            for class_id, class_name in model.names.items():
-                display_name = get_display_name(class_name)
-                class_info[f"ID {class_id}"] = f"{class_name} → {display_name}"
-            
-            st.json(class_info)
-            
-            st.markdown("**Expected PPE Categories:**")
-            expected_categories = ["Helmet", "Mask", "NO-Helmet", "NO-Mask", "NO-Safety Vest", "Person", "Safety Vest"]
-            st.write(", ".join(expected_categories))
-        else:
-            st.error("Model not loaded")
-
-with col_test2:
-    if st.button("🧪 Test Detection"):
-        if model:
-            with st.spinner("Testing model detection..."):
-                # Create test image
-                test_image = np.random.randint(0, 255, (640, 480, 3), dtype=np.uint8)
-                
-                # Test with current confidence threshold
-                results = model(test_image, conf=conf_thresh, verbose=False)
-                detection_count = 0
-                for result in results:
-                    if result.boxes is not None:
-                        detection_count += len(result.boxes)
-                
-                if detection_count > 0:
-                    st.success(f"✅ Model working! Found {detection_count} detections on test image")
-                    st.info("If you're not seeing detections on camera, try:")
-                    st.write("• Lower the confidence threshold")
-                    st.write("• Point camera at different objects")
-                    st.write("• Ensure good lighting")
-                    st.write("• Move closer to objects")
-                else:
-                    st.warning(f"⚠️ No detections at confidence {conf_thresh:.2f}")
-                    st.info("Try lowering the confidence threshold in the sidebar")
-        else:
-            st.error("Model not loaded")
-
 # Footer
 st.markdown("---")
-st.markdown("<div style='text-align:center;color:#6c757d;padding:1rem;'>🛡️ Smart Safety Monitor - Local YOLO Live Detection</div>", unsafe_allow_html=True)
+st.markdown("<div style='text-align:center;color:#6c757d;padding:1rem;'>🛡️ Smart Safety Monitor - Live PPE Detection System</div>", unsafe_allow_html=True)
 

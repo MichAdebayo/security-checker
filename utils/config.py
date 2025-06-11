@@ -17,7 +17,7 @@ CONF_THRESH_DEFAULT = float(os.getenv("CONF_THRESH_DEFAULT", "0.5"))
 DETECTION_INTERVAL_DEFAULT = float(os.getenv("DETECTION_INTERVAL_DEFAULT", "2.0"))
 
 # Live Detection Transformer Parameters
-TRANSFORMER_CONF_THRESH = float(os.getenv("TRANSFORMER_CONF_THRESH", "0.01"))  # Very low for testing  # Very low threshold for better detection
+TRANSFORMER_CONF_THRESH = float(os.getenv("TRANSFORMER_CONF_THRESH", "0.3"))  # Very low for testing  # Very low threshold for better detection
 TRANSFORMER_DETECTION_INTERVAL = float(os.getenv("TRANSFORMER_DETECTION_INTERVAL", "0.5"))
 TRANSFORMER_PERSISTENCE_FRAMES = int(os.getenv("TRANSFORMER_PERSISTENCE_FRAMES", "20"))
 
