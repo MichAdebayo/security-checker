@@ -264,6 +264,7 @@ if img_file:
     st.image(annotated, channels="BGR", caption=f"Detections: {len(detections)}", use_container_width=True)
 
     # Metrics
+# sourcery skip: simplify-constant-sum
     violations = sum(1 for d in detections if 'no-' in d['class'].lower())
     compliance = ((len(detections) - violations) / len(detections) * 100) if detections else 0
     helmets = sum(1 for d in detections if d['class'].lower() == 'helmet')
