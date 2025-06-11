@@ -4,28 +4,17 @@ import numpy as np
 import tempfile
 import os
 import time
-import subprocess
-import json
-import base64
 import sys
 from typing import List, Dict, Tuple
-from inference_sdk import InferenceHTTPClient
+from ultralytics import YOLO
 
 # Import configuration
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
-from utils.config import ROBOFLOW_API_KEY, ROBOFLOW_API_URL, API_MODELS
-
-# Import optimized YOLO model manager
-try:
-    from utils.yolo_model_manager import run_optimized_local_inference, check_yolo_dependencies
-    YOLO_AVAILABLE = check_yolo_dependencies()
-except ImportError:
-    YOLO_AVAILABLE = False
-    run_optimized_local_inference = None
+from utils.config import CONF_THRESH_DEFAULT
 
 # Check if local model file exists
 def check_local_model_available():
-    """Check if the local YOLO model file exists (independent of YOLO dependencies)"""
+    """Check if the local YOLO model file exists"""
     possible_paths = [
         os.path.join(os.path.dirname(__file__), "..", "model", "best.pt"),
         "model/best.pt",
@@ -41,318 +30,412 @@ def check_local_model_available():
 # Check model availability
 LOCAL_MODEL_AVAILABLE, LOCAL_MODEL_PATH = check_local_model_available()
 
-def encode_image_to_base64(image: np.ndarray) -> str:
-    """Convert OpenCV image to base64 string"""
-    _, buffer = cv2.imencode('.png', image)
-    img_str = base64.b64encode(buffer).decode('utf-8')
-    return img_str
-
-def decode_image_from_base64(img_str: str) -> np.ndarray:
-    """Convert base64 string to OpenCV image"""
-    img_data = base64.b64decode(img_str)
-    nparr = np.frombuffer(img_data, np.uint8)
-    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-    return img
-
-def run_local_inference(image: np.ndarray, conf_thresh: float) -> Tuple[List, np.ndarray]:
-    """Run local YOLO inference using optimized approach or subprocess fallback"""
+# Load YOLO model
+@st.cache_resource
+def load_yolo_model():
+    """Load YOLO model once and cache it"""
+    if not LOCAL_MODEL_PATH:
+        st.error("❌ Local model not found!")
+        return None
     try:
-        if not LOCAL_MODEL_PATH:
-            return [], image
-        
-        # Always use subprocess approach to avoid NumPy compatibility issues
-        # The optimized approach has NumPy 2.x conflicts with YOLO dependencies
-        return run_subprocess_inference(image, conf_thresh)
-        
+        model = YOLO(LOCAL_MODEL_PATH, verbose=False)
+        return model
     except Exception as e:
-        st.error(f"Local inference failed: {str(e)}")
-        return [], image
+        st.error(f"❌ Failed to load YOLO model: {e}")
+        return None
 
-def run_subprocess_inference(image: np.ndarray, conf_thresh: float) -> Tuple[List, np.ndarray]:
-    """Fallback subprocess inference for when YOLO dependencies aren't in main environment"""
-    try:
-        # Encode image to base64
-        image_b64 = encode_image_to_base64(image)
-        
-        # Get paths
-        script_path = os.path.join(os.path.dirname(__file__), "..", "utils", "local_yolo_inference.py")
-        
-        # Look for separate YOLO environment
-        yolo_env_path = os.path.join(os.path.dirname(__file__), "..", "yolo_env")
-        yolo_python = os.path.join(yolo_env_path, "bin", "python")
-        
-        # Choose Python executable
-        if os.path.exists(yolo_python):
-            python_executable = yolo_python
-        else:
-            python_executable = sys.executable
-            st.warning("⚠️ YOLO environment not found, using current environment")
-        
-        # Use temporary file to avoid "Argument list too long" error
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.b64', delete=False) as temp_file:
-            temp_file.write(image_b64)
-            temp_file_path = temp_file.name
-        
-        try:
-            # Run subprocess with temp file path instead of large string
-            cmd = [python_executable, script_path, LOCAL_MODEL_PATH, temp_file_path, str(conf_thresh)]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-            
-            if result.returncode != 0:
-                st.error(f"Local inference failed: {result.stderr}")
-                return [], image
-            
-            # Parse result
-            output = json.loads(result.stdout)
-            if "error" in output:
-                st.error(f"Local inference error: {output['error']}")
-                return [], image
-            
-            # Decode annotated image
-            annotated = decode_image_from_base64(output["annotated_image"])
-            
-            return output["detections"], annotated
-            
-        finally:
-            # Clean up temporary file
-            try:
-                os.unlink(temp_file_path)
-            except:
-                pass  # Ignore cleanup errors
-        
-    except subprocess.TimeoutExpired:
-        st.error("Local inference timed out")
-        return [], image
-    except Exception as e:
-        st.error(f"Local inference failed: {str(e)}")
-        return [], image
-
+# Page configuration
 st.set_page_config(
-    page_title="PPE Detection – Video Upload",
+    page_title="PPE Video Analysis – Smart Safety Monitor",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# --- Custom CSS for styling ---
+# CSS for consistent styling
 st.markdown("""
 <style>
     .main-header {background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);padding: 2rem;border-radius: 15px;margin-bottom: 2rem;text-align: center;box-shadow: 0 8px 32px rgba(0,0,0,0.1);}
     .metric-card {background: white;padding: 1.5rem;border-radius: 10px;box-shadow: 0 4px 16px rgba(0,0,0,0.1);border-left: 4px solid #667eea;margin: 1rem 0;color: #333333 !important;}
     .metric-card h4 {color: #333333 !important;margin-bottom: 1rem;}
     .metric-card p {color: #555555 !important;margin: 0.5rem 0;}
-    .status-badge {display: inline-block;padding: 0.5rem 1rem;border-radius: 20px;color: white;font-weight: bold;margin: 0.5rem 0;}
-    .status-safe {background: linear-gradient(45deg, #28a745, #20c997);} .status-warning {background: linear-gradient(45deg, #ffc107, #fd7e14);} .status-danger {background: linear-gradient(45deg, #dc3545, #e74c3c);}
-    .upload-area {background: #f8f9fa;border: 2px dashed #dee2e6;border-radius: 15px;padding: 3rem;text-align: center;margin: 2rem 0;}
+    .progress-container {background: #f0f2f6;border-radius: 10px;padding: 1rem;margin: 1rem 0;}
+    .compliance-alert {
+        background: #ff4757;
+        color: white;
+        padding: 1rem;
+        border-radius: 10px;
+        text-align: center;
+        font-weight: bold;
+        animation: blink 1s infinite;
+        margin: 1rem 0;
+    }
+    @keyframes blink {
+        0%, 50% { opacity: 1; }
+        51%, 100% { opacity: 0.3; }
+    }
+    .stats-panel {
+        background: #f8f9fa;
+        padding: 1.5rem;
+        border-radius: 10px;
+        border: 1px solid #dee2e6;
+        margin: 1rem 0;
+    }
+    .ppe-count {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 0.5rem 0;
+        border-bottom: 1px solid #eee;
+    }
+    .ppe-count:last-child {
+        border-bottom: none;
+    }
 </style>
 """, unsafe_allow_html=True)
 
-# --- Header ---
+# Header
 st.markdown("""
 <div class="main-header">
-    <h1 style="color:white;margin:0;font-size:2.5rem;">🎥 Video PPE Detection</h1>
-    <p style="color:rgba(255,255,255,0.9);margin:0.5rem 0 0 0;font-size:1.1rem;">Upload a high-res short video for PPE detection and compliance analysis</p>
+    <h1 style="color:white;margin:0;font-size:2.5rem;">🎥 Local YOLO Video Analysis</h1>
+    <p style="color:rgba(255,255,255,0.9);margin:0.5rem 0 0 0;font-size:1.1rem;">Process video files with local PPE detection model</p>
 </div>
 """, unsafe_allow_html=True)
 
-# --- API and Model Config ---
-@st.cache_resource(show_spinner=False)
-def get_rf_client() -> InferenceHTTPClient:
-    return InferenceHTTPClient(api_url=ROBOFLOW_API_URL, api_key=ROBOFLOW_API_KEY)
+# YOLO class mapping
+YOLO_CLASSES = {
+    0: "Hardhat",
+    1: "Mask", 
+    2: "NO-Hardhat",
+    3: "NO-Mask",
+    4: "NO-Safety Vest",
+    5: "Person",
+    6: "Safety Cone",
+    7: "Safety Vest",
+    8: "Machinery",
+    9: "Vehicle"
+}
 
-def apply_nms(preds: List[Dict], conf_thresh: float, overlap_thresh: float) -> List[Dict]:
-    boxes, confidences, idxs = [], [], []
-    for i, p in enumerate(preds):
-        if p["confidence"] >= conf_thresh:
-            cx, cy, w, h = p["x"], p["y"], p["width"], p["height"]
-            x1, y1 = int(cx - w/2), int(cy - h/2)
-            boxes.append([x1, y1, int(w), int(h)])
-            confidences.append(float(p["confidence"]))
-            idxs.append(i)
-    if not boxes:
-        return []
-    keep = cv2.dnn.NMSBoxes(boxes, confidences, conf_thresh, overlap_thresh)
-    result = []
-    for k in keep:
-        idx = k[0] if isinstance(k, (list, tuple, np.ndarray)) else k
-        result.append(preds[idxs[idx]])
-    return result
+# PPE categories to track for compliance
+PPE_CATEGORIES = [0, 1, 2, 3, 4, 5, 7]  # Hardhat, Mask, NO-Hardhat, NO-Mask, NO-Safety Vest, Person, Safety Vest
 
+# Color mapping for classes
 def get_color_for_class(name: str) -> Tuple[int,int,int]:
-    return {
-        "helmet": (0,255,0),
-        "safety-vest": (0,255,255),
+    color_map = {
+        "hardhat": (0,255,0),
+        "mask": (0,255,128),
+        "no-hardhat": (0,0,255),
+        "no-mask": (255,0,255),
+        "no-safety vest": (255,165,0),
         "person": (255,0,0),
-        "no-helmet": (0,0,255),
-        "no-safety-vest": (0,165,255)
-    }.get(name.lower(), (128,128,128))
-
-def analyze_frame(image: np.ndarray, client, model_id: str, conf_thresh: float, overlap_thresh: float):
-    if model_id == "best.pt (Local)":
-        # Use local model via subprocess
-        return run_local_inference(image, conf_thresh)
-    else:
-        # Use Roboflow API
-        resp = client.infer(image, model_id=model_id)
-        preds = resp.get("predictions", [])
-        filtered = apply_nms(preds, conf_thresh, overlap_thresh)
-        out = image.copy()
-        for p in filtered:
-            x1 = int(p["x"] - p["width"]/2)
-            y1 = int(p["y"] - p["height"]/2)
-            x2 = int(p["x"] + p["width"]/2)
-            y2 = int(p["y"] + p["height"]/2)
-            col = get_color_for_class(p["class"])
-            cv2.rectangle(out, (x1,y1), (x2,y2), col, 2)
-            label = f"{p['class']} ({p['confidence']:.2f})"
-            sz = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
-            cv2.rectangle(out, (x1,y1-sz[1]-8), (x1+sz[0], y1), col, -1) # type: ignore
-            cv2.putText(out, label, (x1, y1-4), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 2)
-        return filtered, out
-
-def calculate_metrics(detections: List[Dict]) -> Dict:
-    # Only count unique helmets/vests per frame, not cumulative
-    frame_helmet = {}
-    frame_vest = {}
-    frame_no_helmet = {}
-    frame_no_vest = {}
-    for d in detections:
-        f = d.get('frame', -1)
-        cls = d['class'].lower()
-        if cls == 'helmet':
-            frame_helmet.setdefault(f, 0)
-            frame_helmet[f] += 1
-        elif cls == 'no-helmet':
-            frame_no_helmet.setdefault(f, 0)
-            frame_no_helmet[f] += 1
-        elif 'vest' in cls and 'no-' not in cls:
-            frame_vest.setdefault(f, 0)
-            frame_vest[f] += 1
-        elif cls == 'no-safety-vest':
-            frame_no_vest.setdefault(f, 0)
-            frame_no_vest[f] += 1
-    # Count unique frames with at least one detection
-    helmets = sum(1 for v in frame_helmet.values() if v > 0)
-    vests = sum(1 for v in frame_vest.values() if v > 0)
-    violations = sum(1 for v in frame_no_helmet.values() if v > 0) + sum(1 for v in frame_no_vest.values() if v > 0)
-    total_frames = len(set(list(frame_helmet.keys()) + list(frame_vest.keys()) + list(frame_no_helmet.keys()) + list(frame_no_vest.keys())))
-    compliance = ((total_frames - violations) / total_frames * 100) if total_frames else 0
-    return {
-        "helmets": helmets,
-        "vests": vests,
-        "violations": violations,
-        "compliance": compliance
+        "safety vest": (0,255,255),
+        "safety cone": (255,255,0),
+        "machinery": (128,128,128),
+        "vehicle": (64,64,64)
     }
+    return color_map.get(name.lower(), (128,128,128))
 
-# --- Sidebar controls ---
-with st.sidebar:
-    st.header("⚙️ Detection Parameters")
-    # Model selection
-    model_options = API_MODELS.copy()
-    if LOCAL_MODEL_AVAILABLE:
-        model_options.append("best.pt (Local)")
+def calculate_compliance_percentage(ppe_counts: Dict[str, int]) -> float:
+    """Calculate PPE compliance percentage"""
+    total_people = ppe_counts.get("Person", 0)
+    if total_people == 0:
+        return 100.0  # No people detected, assume compliant
     
-    model_id = st.selectbox(
-        "🎯 Model Selection",
-        model_options,
-        index=1,
-        help="Choose the PPE detection model"
+    # Count violations
+    violations = (
+        ppe_counts.get("NO-Hardhat", 0) + 
+        ppe_counts.get("NO-Mask", 0) + 
+        ppe_counts.get("NO-Safety Vest", 0)
     )
-    conf_thresh = st.slider("Confidence Threshold", 0.0, 1.0, 0.25, 0.05)
-    overlap_thresh = st.slider("IoU Threshold", 0.0, 1.0, 0.3, 0.05)
+    
+    # Calculate compliance (fewer violations = higher compliance)
+    compliance = max(0, (total_people * 3 - violations) / (total_people * 3) * 100)
+    return compliance
 
-# --- Main content ---
-st.markdown("### Upload Video for PPE Detection")
-video_file = st.file_uploader("Choose a video", type=["mp4","avi","mov"], help="Upload a short, high-res video")
+def run_yolo_inference(image: np.ndarray, conf_thresh: float, model) -> Tuple[List, np.ndarray]:
+    """Run YOLO inference on image"""
+    try:
+        if model is None:
+            return [], image
+        
+        # Convert BGR to RGB for YOLO
+        rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        
+        # Run inference
+        results = model(rgb_image, conf=conf_thresh, verbose=False)
+        
+        # Extract detections
+        detections = []
+        annotated = image.copy()
+        
+        for result in results:
+            boxes = result.boxes
+            if boxes is not None:
+                for box in boxes:
+                    # Get box coordinates and info
+                    x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+                    confidence = float(box.conf[0].cpu().numpy())
+                    class_id = int(box.cls[0].cpu().numpy())
+                    class_name = YOLO_CLASSES.get(class_id, f"class_{class_id}")
+                    
+                    # Convert to center format for consistency
+                    cx = float((x1 + x2) / 2)
+                    cy = float((y1 + y2) / 2)
+                    width = float(x2 - x1)
+                    height = float(y2 - y1)
+                    
+                    # Create detection dict
+                    detection = {
+                        "x": cx,
+                        "y": cy,
+                        "width": width,
+                        "height": height,
+                        "confidence": confidence,
+                        "class": class_name
+                    }
+                    detections.append(detection)
+                    
+                    # Draw bounding box on image
+                    x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+                    color = get_color_for_class(class_name)
+                    
+                    # Draw rectangle
+                    cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
+                    
+                    # Draw label
+                    label = f"{class_name} ({confidence:.2f})"
+                    label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
+                    
+                    # Draw label background
+                    cv2.rectangle(annotated, (x1, y1 - label_size[1] - 8), 
+                                (x1 + label_size[0], y1), color, -1)
+                    
+                    # Draw label text
+                    cv2.putText(annotated, label, (x1, y1 - 4), 
+                              cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        
+        return detections, annotated
+        
+    except Exception as e:
+        st.error(f"Inference error: {e}")
+        return [], image
 
-if video_file:
-    t_start = time.time()
-    # Save video to temp file
-    with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as tmp:
-        tmp.write(video_file.read())
-        tmp_path = tmp.name
-    cap = cv2.VideoCapture(tmp_path)
+def process_video_with_local_model(input_path: str, output_path: str, conf_thresh: float, model, progress_bar, status_text) -> Dict:
+    """Process video using local YOLO model"""
+    cap = cv2.VideoCapture(input_path)
+    if not cap.isOpened():
+        return {"error": "Could not open video file"}
+    
+    # Get video properties
     fps = int(cap.get(cv2.CAP_PROP_FPS))
-    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    duration = frame_count / fps if fps else 0
-    st.info(f"Video: {frame_count} frames | {duration:.1f}s | {width}x{height} @ {fps} FPS")
-    client = get_rf_client()
-
-    # --- Live video playback with detection ---
-    st.markdown("### ▶️ Live PPE Detection Feed")
-    play = st.button("Play", key="play_btn")
-    pause = st.button("Pause", key="pause_btn")
-    stop = st.button("Stop/Reset", key="stop_btn")
-    speed = st.selectbox("Playback Speed", ["0.1x", "0.25x", "0.5x", "1x", "2x", "4x"], index=3)
-    speed_map = {"0.1x": 10.0, "0.25x": 4.0, "0.5x": 2.0, "1x": 1.0, "2x": 0.5, "4x": 0.25}
-    frame_delay = (1.0 / fps) * speed_map[speed] if fps else 0.04
-    detection_interval = st.slider("Detection Interval (frames)", 1, 30, 3, 1, help="Run detection every Nth frame for smooth playback")
-
-    # Session state for playback
-    if 'video_frame_idx' not in st.session_state or stop:
-        st.session_state.video_frame_idx = 0
-        st.session_state.video_playing = False
-        st.session_state.detections_live = []
-        st.session_state.last_detections = []
-    if play:
-        st.session_state.video_playing = True
-    if pause:
-        st.session_state.video_playing = False
-
-    frame_placeholder = st.empty()
-    metrics_placeholder = st.empty()
-    progress_bar = st.progress(0.0)
-
-    while st.session_state.video_playing and st.session_state.video_frame_idx < frame_count:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, st.session_state.video_frame_idx)
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    
+    # Setup video writer
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v') # type: ignore
+    out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+    
+    # Process frames
+    frame_count = 0
+    total_detections = 0
+    total_violations = 0
+    
+    # PPE category counts
+    ppe_counts = {
+        "Hardhat": 0,
+        "Mask": 0, 
+        "NO-Hardhat": 0,
+        "NO-Mask": 0,
+        "NO-Safety Vest": 0,
+        "Person": 0,
+        "Safety Vest": 0
+    }
+    
+    start_time = time.time()
+    
+    while True:
         ret, frame = cap.read()
         if not ret:
             break
-        # Only run detection every Nth frame
-        if st.session_state.video_frame_idx % detection_interval == 0:
-            dets, annotated = analyze_frame(frame, client, model_id, conf_thresh, overlap_thresh)
-            st.session_state.last_detections = dets
-            # Draw detections on frame
-            display_frame = annotated
-        else:
-            # For skipped frames, just draw last detections (approximate)
-            display_frame = frame.copy()
-            for p in st.session_state.last_detections:
-                x1 = int(p["x"] - p["width"]/2)
-                y1 = int(p["y"] - p["height"]/2)
-                x2 = int(p["x"] + p["width"]/2)
-                y2 = int(p["y"] + p["height"]/2)
-                col = get_color_for_class(p["class"])
-                cv2.rectangle(display_frame, (x1,y1), (x2,y2), col, 2)
-                label = f"{p['class']} ({p['confidence']:.2f})"
-                sz = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
-                cv2.rectangle(display_frame, (x1,y1-sz[1]-8), (x1+sz[0], y1), col, -1)
-                cv2.putText(display_frame, label, (x1, y1-4), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 2)
-        # For metrics, only count detections on detection frames
-        if st.session_state.video_frame_idx % detection_interval == 0:
-            for d in st.session_state.last_detections:
-                d['frame'] = st.session_state.video_frame_idx
-                d['timestamp'] = st.session_state.video_frame_idx / fps if fps else 0
-                st.session_state.detections_live.append(d)
-        frame_placeholder.image(display_frame, channels="BGR", caption=f"Frame {st.session_state.video_frame_idx+1}/{frame_count}", use_container_width=True)
-        # Live metrics (remove cumulative counting, just show frame info)
-        if st.session_state.last_detections:
-            frame_helmets = sum(1 for d in st.session_state.last_detections if d['class'].lower() == 'helmet')
-            frame_no_helmets = sum(1 for d in st.session_state.last_detections if d['class'].lower() == 'no-helmet')
-            frame_vests = sum(1 for d in st.session_state.last_detections if 'vest' in d['class'].lower() and 'no-' not in d['class'].lower())
-            frame_no_vests = sum(1 for d in st.session_state.last_detections if d['class'].lower() == 'no-safety-vest')
-            metrics_placeholder.markdown(f"**Frame {st.session_state.video_frame_idx+1}/{frame_count}**  🪖 Helmets: {frame_helmets}  ❌ No Helmet: {frame_no_helmets}  🦺 Vests: {frame_vests}  ❌ No Vest: {frame_no_vests}")
-        else:
-            metrics_placeholder.markdown(f"**Frame {st.session_state.video_frame_idx+1}/{frame_count}**  No detections.")
-        progress_bar.progress((st.session_state.video_frame_idx+1)/frame_count)
-        st.session_state.video_frame_idx += 1
-        time.sleep(frame_delay)
+        
+        # Run inference
+        detections, annotated_frame = run_yolo_inference(frame, conf_thresh, model)
+        
+        # Update statistics and PPE counts
+        total_detections += len(detections)
+        for detection in detections:
+            class_name = detection['class']
+            if class_name in ppe_counts:
+                ppe_counts[class_name] += 1
+            if 'no-' in class_name.lower():
+                total_violations += 1
+        
+        # Write frame
+        out.write(annotated_frame)
+        
+        frame_count += 1
+        
+        # Update progress
+        progress = frame_count / total_frames
+        progress_bar.progress(progress)
+        
+        elapsed_time = time.time() - start_time
+        if elapsed_time > 0:
+            fps_current = frame_count / elapsed_time
+            eta = (total_frames - frame_count) / fps_current if fps_current > 0 else 0
+            status_text.text(f"Processing frame {frame_count}/{total_frames} | FPS: {fps_current:.1f} | ETA: {eta:.1f}s")
+    
     cap.release()
-    os.unlink(tmp_path)
-    if st.session_state.video_frame_idx >= frame_count:
-        st.session_state.video_playing = False
-        st.success(f"Detection complete in {time.time()-t_start:.1f}s")
+    out.release()
+    
+    processing_time = time.time() - start_time
+    compliance_percentage = calculate_compliance_percentage(ppe_counts)
+    
+    return {
+        "success": True,
+        "total_frames": total_frames,
+        "total_detections": total_detections,
+        "total_violations": total_violations,
+        "processing_time": processing_time,
+        "avg_fps": frame_count / processing_time if processing_time > 0 else 0,
+        "ppe_counts": ppe_counts,
+        "compliance_percentage": compliance_percentage
+    }
+
+# Sidebar controls
+with st.sidebar:
+    st.header("⚙️ Processing Parameters")
+    
+    # Simple model check without detailed info
+    if not LOCAL_MODEL_AVAILABLE or not LOCAL_MODEL_PATH:
+        st.error("❌ Local model not found")
+        st.stop()
+    
+    conf_thresh = st.slider("Confidence Threshold", 0.0, 1.0, float(CONF_THRESH_DEFAULT), 0.05)
+
+# Load model
+model = load_yolo_model()
+if model is None:
+    st.error("❌ Failed to load YOLO model. Please check the model file.")
+    st.stop()
+
+# Main content
+st.markdown("### Upload Video for Local PPE Analysis")
+video_file = st.file_uploader("Choose a video file", type=["mp4", "avi", "mov", "mkv"], help="Upload a video file showing workers with or without PPE")
+
+if video_file:
+    # Save uploaded video to temporary file
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as tmp_input:
+        tmp_input.write(video_file.read())
+        input_path = tmp_input.name
+    
+    # Show video info
+    cap = cv2.VideoCapture(input_path)
+    if cap.isOpened():
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        duration = frame_count / fps if fps > 0 else 0
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        cap.release()
+        
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("📐 Resolution", f"{width}x{height}")
+        with col2:
+            st.metric("⏱️ Duration", f"{duration:.1f}s")
+        with col3:
+            st.metric("🎬 Frames", frame_count)
+        with col4:
+            st.metric("📊 FPS", f"{fps:.1f}")
+    
+    # Process video button
+    if st.button("🚀 Process Video", type="primary"):
+        # Create output path
+        with tempfile.NamedTemporaryFile(delete=False, suffix='_processed.mp4') as tmp_output:
+            output_path = tmp_output.name
+        
+        # Progress tracking
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        with st.spinner("🔍 Processing video with local YOLO model..."):
+            result = process_video_with_local_model(
+                input_path, output_path, conf_thresh, model, progress_bar, status_text
+            )
+        
+        if result.get("success"):
+            st.success("✅ Video processing completed!")
+            
+            # Create layout with main results and PPE statistics panel
+            main_col, stats_col = st.columns([2, 1])
+            
+            with main_col:
+                # Show main results
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("🎯 Total Detections", result["total_detections"])
+                with col2:
+                    st.metric("⚠️ Violations", result["total_violations"])
+                with col3:
+                    st.metric("⏱️ Processing Time", f"{result['processing_time']:.1f}s")
+                with col4:
+                    st.metric("🚀 Avg FPS", f"{result['avg_fps']:.1f}")
+                
+                # Download processed video
+                with open(output_path, 'rb') as f:
+                    st.download_button(
+                        label="📥 Download Processed Video",
+                        data=f.read(),
+                        file_name="ppe_processed_video.mp4",
+                        mime="video/mp4"
+                    )
+            
+            with stats_col:
+                # PPE Statistics Panel
+                st.markdown("### 📊 PPE Detection Statistics")
+                
+                # Compliance percentage
+                compliance = result["compliance_percentage"]
+                if compliance < 60:
+                    st.markdown(f"""
+                    <div class="compliance-alert">
+                        🚨 COMPLIANCE ALERT 🚨<br>
+                        {compliance:.1f}% Compliance
+                    </div>
+                    """, unsafe_allow_html=True)
+                else:
+                    st.success(f"✅ Compliance: {compliance:.1f}%")
+                
+                # PPE counts panel
+                st.markdown('<div class="stats-panel">', unsafe_allow_html=True)
+                st.markdown("**PPE Category Counts:**")
+                
+                ppe_counts = result["ppe_counts"]
+                for category in ["Hardhat", "Mask", "NO-Hardhat", "NO-Mask", "NO-Safety Vest", "Person", "Safety Vest"]:
+                    count = ppe_counts.get(category, 0)
+                    icon = "🟢" if "NO-" not in category else "🔴"
+                    if category == "Person":
+                        icon = "👤"
+                    
+                    st.markdown(f"""
+                    <div class="ppe-count">
+                        <span>{icon} {category}</span>
+                        <span><strong>{count}</strong></span>
+                    </div>
+                    """, unsafe_allow_html=True)
+                
+                st.markdown('</div>', unsafe_allow_html=True)
+        else:
+            st.error(f"❌ Processing failed: {result.get('error', 'Unknown error')}")
+        
+        # Cleanup
+        try:
+            os.unlink(input_path)
+            os.unlink(output_path)
+        except:
+            pass
+
 # Footer
 st.markdown("---")
-st.markdown("<div style='text-align:center;color:#6c757d;padding:1rem;'>🛡️ Smart Safety Monitor - Video PPE Detection</div>", unsafe_allow_html=True)
+st.markdown("<div style='text-align:center;color:#6c757d;padding:1rem;'>🛡️ Smart Safety Monitor - Local YOLO Video Analysis</div>", unsafe_allow_html=True)

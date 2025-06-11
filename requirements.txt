@@ -1,11 +1,16 @@
-numpy
-pandas
-requests
+# Core Streamlit dependencies
 streamlit
 streamlit-webrtc
-watchdog
-# Main dependencies for inference models only
-inference-sdk
+
+# Computer vision and ML
 opencv-python
-python-dotenv
 ultralytics
+numpy
+
+# Utility libraries  
+pandas
+python-dotenv
+watchdog
+
+# Note: This is the simplified local-only version
+# No API dependencies (inference-sdk, requests) needed
