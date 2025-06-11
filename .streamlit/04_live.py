@@ -1,10 +1,101 @@
 import streamlit as st
 import time
-from typing import List
+import os
+import subprocess
+import json
+import base64
+import sys
+import tempfile
+from typing import List, Tuple
 import cv2
 import numpy as np
 from inference_sdk import InferenceHTTPClient
 from streamlit_webrtc import VideoTransformerBase, webrtc_streamer
+
+# Check if local model file exists
+def check_local_model_available():
+    """Check if the local YOLO model file exists"""
+    possible_paths = [
+        os.path.join(os.path.dirname(__file__), "..", "model", "best.pt"),
+        "model/best.pt",
+        os.path.join("model", "best.pt"),
+        "best.pt"
+    ]
+    
+    for path in possible_paths:
+        if os.path.exists(path):
+            return True, path
+    return False, None
+
+# Check model availability
+LOCAL_MODEL_AVAILABLE, LOCAL_MODEL_PATH = check_local_model_available()
+
+def encode_image_to_base64(image: np.ndarray) -> str:
+    """Convert OpenCV image to base64 string"""
+    _, buffer = cv2.imencode('.png', image)
+    img_str = base64.b64encode(buffer).decode('utf-8')
+    return img_str
+
+def decode_image_from_base64(img_str: str) -> np.ndarray:
+    """Convert base64 string to OpenCV image"""
+    img_data = base64.b64decode(img_str)
+    nparr = np.frombuffer(img_data, np.uint8)
+    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    return img
+
+def run_local_inference(image: np.ndarray, conf_thresh: float) -> Tuple[List, np.ndarray]:
+    """Run local YOLO inference using subprocess with separate environment"""
+    try:
+        # Encode image to base64
+        image_b64 = encode_image_to_base64(image)
+        
+        # Get paths
+        script_path = os.path.join(os.path.dirname(__file__), "..", "local_yolo_inference.py")
+        
+        # Look for separate YOLO environment
+        yolo_env_path = os.path.join(os.path.dirname(__file__), "..", "yolo_env")
+        yolo_python = os.path.join(yolo_env_path, "bin", "python")
+        
+        # Choose Python executable
+        if os.path.exists(yolo_python):
+            python_executable = yolo_python
+        else:
+            python_executable = sys.executable
+        
+        # Use temporary file to avoid "Argument list too long" error
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.b64', delete=False) as temp_file:
+            temp_file.write(image_b64)
+            temp_file_path = temp_file.name
+        
+        try:
+            # Run subprocess with temp file path instead of large string
+            cmd = [python_executable, script_path, LOCAL_MODEL_PATH, temp_file_path, str(conf_thresh)]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)  # Shorter timeout for live
+            
+            if result.returncode != 0:
+                return [], image
+            
+            # Parse result
+            output = json.loads(result.stdout)
+            if "error" in output:
+                return [], image
+            
+            # Decode annotated image
+            annotated = decode_image_from_base64(output["annotated_image"])
+            
+            return output["detections"], annotated
+            
+        finally:
+            # Clean up temporary file
+            try:
+                os.unlink(temp_file_path)
+            except:
+                pass  # Ignore cleanup errors
+        
+    except subprocess.TimeoutExpired:
+        return [], image
+    except Exception as e:
+        return [], image
 
 st.set_page_config(
     page_title="PPE Detection – Smart Safety Monitor",
@@ -116,9 +207,17 @@ with st.sidebar:
     st.markdown('<div class="sidebar-section">', unsafe_allow_html=True)
     st.header("⚙️ Detection Settings")
     
+    # Model selection
+    model_options = ["ppe-factory-bmdcj/2", "pbe-detection/4", "safety-pyazl/1"]
+    if LOCAL_MODEL_AVAILABLE:
+        model_options.append("best.pt (Local)")
+        st.info(f"✅ Local model found at: {LOCAL_MODEL_PATH}")
+    else:
+        st.warning("⚠️ Local model not found - using API models only")
+    
     model_id = st.selectbox(
         "🎯 Model Selection", 
-        ["ppe-factory-bmdcj/2", "pbe-detection/4", "safety-pyazl/1"],
+        model_options,
         index=0
     )
     
@@ -243,9 +342,14 @@ class PPETransformer(VideoTransformerBase):
         current = time.time()
         if current - self._last_time >= self.detection_interval:
             try:
-                # Ensure we send BGR image to the API (Roboflow expects BGR)
-                response = self.client.infer(image, model_id=self.model_id)
-                self._last_preds = response.get("predictions", [])
+                if self.model_id == "best.pt (Local)":
+                    # Use local model via subprocess
+                    detections, _ = run_local_inference(image, self.conf_thresh)
+                    self._last_preds = detections
+                else:
+                    # Use Roboflow API - ensure we send BGR image (Roboflow expects BGR)
+                    response = self.client.infer(image, model_id=self.model_id)
+                    self._last_preds = response.get("predictions", [])
                 self._last_time = current
             except Exception as e:
                 # Draw error message on a copy to avoid color conflicts
@@ -260,7 +364,7 @@ class PPETransformer(VideoTransformerBase):
                     2,
                 )
                 # Don't return the error image, just log it
-                print(f"API Error: {e}")
+                print(f"Inference Error: {e}")
         return self._last_preds
 
     def transform(self, frame):

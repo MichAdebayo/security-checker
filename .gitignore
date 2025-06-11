@@ -1,6 +1,10 @@
 # Created by https://www.toptal.com/developers/gitignore/api/macos,venv,linux,visualstudiocode
 # Edit at https://www.toptal.com/developers/gitignore?templates=macos,venv,linux,visualstudiocode
 
+# Test files - temporary, will be deleted when testing is complete
+test_*.py
+*_test.py
+
 ### Linux ###
 *~
 
@@ -61,6 +65,7 @@ Temporary Items
 [Ss]cripts
 pyvenv.cfg
 .venv
+yolo_env
 pip-selfcheck.json
 
 ### VisualStudioCode ###
@@ -84,5 +89,8 @@ pip-selfcheck.json
 
 # Pycache
 __pycache__/
+
+# Local YOLO environment (created by setup script)
+yolo_env/
 
 # End of https://www.toptal.com/developers/gitignore/api/macos,venv,linux,visualstudiocode
