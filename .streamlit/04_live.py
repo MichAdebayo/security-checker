@@ -6,11 +6,32 @@ import json
 import base64
 import sys
 import tempfile
+import requests
 from typing import List, Tuple
 import cv2
 import numpy as np
 from inference_sdk import InferenceHTTPClient
 from streamlit_webrtc import VideoTransformerBase, webrtc_streamer
+
+# Import configuration
+sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
+from utils.config import (
+    ROBOFLOW_API_KEY, 
+    ROBOFLOW_API_URL, 
+    API_MODELS,
+    MODEL_ID_DEFAULT,
+    CONF_THRESH_DEFAULT, 
+    OVERLAP_THRESH_DEFAULT, 
+    DETECTION_INTERVAL_DEFAULT
+)
+
+# Import optimized YOLO model manager
+try:
+    from utils.yolo_model_manager import run_optimized_local_inference, check_yolo_dependencies
+    YOLO_AVAILABLE = check_yolo_dependencies()
+except ImportError:
+    YOLO_AVAILABLE = False
+    run_optimized_local_inference = None
 
 # Check if local model file exists
 def check_local_model_available():
@@ -44,13 +65,61 @@ def decode_image_from_base64(img_str: str) -> np.ndarray:
     return img
 
 def run_local_inference(image: np.ndarray, conf_thresh: float) -> Tuple[List, np.ndarray]:
-    """Run local YOLO inference using subprocess with separate environment"""
+    """Run local YOLO inference using HTTP server for optimal live performance"""
+    try:
+        if not LOCAL_MODEL_PATH:
+            return [], image
+        
+        # Try HTTP server first (much faster for live detection)
+        try:
+            return run_http_inference(image, conf_thresh)
+        except Exception:
+            # Fallback to subprocess if server not available
+            return run_subprocess_inference(image, conf_thresh)
+        
+    except Exception:
+        # Silent error handling for live detection
+        return [], image
+
+def run_http_inference(image: np.ndarray, conf_thresh: float) -> Tuple[List, np.ndarray]:
+    """Fast HTTP-based inference using persistent YOLO server"""
+    try:
+        # Encode image to base64
+        image_b64 = encode_image_to_base64(image)
+        
+        # Prepare request data
+        data = {
+            "image_b64": image_b64,
+            "conf_thresh": conf_thresh
+        }
+        
+        # Send request to local YOLO server with very short timeout for live video
+        response = requests.post(
+            "http://127.0.0.1:8888/predict",
+            json=data,
+            timeout=0.5  # Very aggressive timeout for live detection
+        )
+        
+        if response.status_code == 200:
+            result = response.json()
+            if result.get("success", False):
+                # Decode annotated image
+                annotated = decode_image_from_base64(result["annotated_image"])
+                return result["detections"], annotated
+        
+        return [], image
+        
+    except Exception as e:
+        raise e  # Re-raise to trigger fallback
+
+def run_subprocess_inference(image: np.ndarray, conf_thresh: float) -> Tuple[List, np.ndarray]:
+    """Optimized subprocess inference for live detection"""
     try:
         # Encode image to base64
         image_b64 = encode_image_to_base64(image)
         
         # Get paths
-        script_path = os.path.join(os.path.dirname(__file__), "..", "local_yolo_inference.py")
+        script_path = os.path.join(os.path.dirname(__file__), "..", "utils", "local_yolo_inference.py")
         
         # Look for separate YOLO environment
         yolo_env_path = os.path.join(os.path.dirname(__file__), "..", "yolo_env")
@@ -68,9 +137,9 @@ def run_local_inference(image: np.ndarray, conf_thresh: float) -> Tuple[List, np
             temp_file_path = temp_file.name
         
         try:
-            # Run subprocess with temp file path instead of large string
+            # Run subprocess with very aggressive timeout for live detection
             cmd = [python_executable, script_path, LOCAL_MODEL_PATH, temp_file_path, str(conf_thresh)]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)  # Shorter timeout for live
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=1.5)  # Ultra-short timeout
             
             if result.returncode != 0:
                 return [], image
@@ -93,6 +162,7 @@ def run_local_inference(image: np.ndarray, conf_thresh: float) -> Tuple[List, np
                 pass  # Ignore cleanup errors
         
     except subprocess.TimeoutExpired:
+        # Return empty result on timeout - don't freeze the video
         return [], image
     except Exception as e:
         return [], image
@@ -195,25 +265,15 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# Configuration
-API_KEY_DEFAULT = "mDauQAfDrFWieIsSqti6"  # Hidden from UI
-MODEL_ID_DEFAULT = "ppe-factory-bmdcj/2"
-CONF_THRESH_DEFAULT = 0.5
-OVERLAP_THRESH_DEFAULT = 0.3
-DETECTION_INTERVAL_DEFAULT = 4.0
-
 # Sidebar
 with st.sidebar:
     st.markdown('<div class="sidebar-section">', unsafe_allow_html=True)
     st.header("⚙️ Detection Settings")
     
     # Model selection
-    model_options = ["ppe-factory-bmdcj/2", "pbe-detection/4", "safety-pyazl/1"]
+    model_options = API_MODELS.copy()
     if LOCAL_MODEL_AVAILABLE:
         model_options.append("best.pt (Local)")
-        st.info(f"✅ Local model found at: {LOCAL_MODEL_PATH}")
-    else:
-        st.warning("⚠️ Local model not found - using API models only")
     
     model_id = st.selectbox(
         "🎯 Model Selection", 
@@ -325,7 +385,7 @@ def apply_nms(preds: List[dict], conf_thresh: float, overlap_thresh: float) -> L
 # Roboflow client (cached)
 @st.cache_resource(show_spinner=False)
 def get_rf_client():
-    return InferenceHTTPClient(api_url="https://detect.roboflow.com", api_key=API_KEY_DEFAULT)
+    return InferenceHTTPClient(api_url="https://detect.roboflow.com", api_key=ROBOFLOW_API_KEY)
 
 # Video transformer
 class PPETransformer(VideoTransformerBase):

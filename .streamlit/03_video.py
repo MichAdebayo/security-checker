@@ -11,9 +11,21 @@ import sys
 from typing import List, Dict, Tuple
 from inference_sdk import InferenceHTTPClient
 
+# Import configuration
+sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
+from utils.config import ROBOFLOW_API_KEY, ROBOFLOW_API_URL, API_MODELS
+
+# Import optimized YOLO model manager
+try:
+    from utils.yolo_model_manager import run_optimized_local_inference, check_yolo_dependencies
+    YOLO_AVAILABLE = check_yolo_dependencies()
+except ImportError:
+    YOLO_AVAILABLE = False
+    run_optimized_local_inference = None
+
 # Check if local model file exists
 def check_local_model_available():
-    """Check if the local YOLO model file exists"""
+    """Check if the local YOLO model file exists (independent of YOLO dependencies)"""
     possible_paths = [
         os.path.join(os.path.dirname(__file__), "..", "model", "best.pt"),
         "model/best.pt",
@@ -43,13 +55,27 @@ def decode_image_from_base64(img_str: str) -> np.ndarray:
     return img
 
 def run_local_inference(image: np.ndarray, conf_thresh: float) -> Tuple[List, np.ndarray]:
-    """Run local YOLO inference using subprocess with separate environment"""
+    """Run local YOLO inference using optimized approach or subprocess fallback"""
+    try:
+        if not LOCAL_MODEL_PATH:
+            return [], image
+        
+        # Always use subprocess approach to avoid NumPy compatibility issues
+        # The optimized approach has NumPy 2.x conflicts with YOLO dependencies
+        return run_subprocess_inference(image, conf_thresh)
+        
+    except Exception as e:
+        st.error(f"Local inference failed: {str(e)}")
+        return [], image
+
+def run_subprocess_inference(image: np.ndarray, conf_thresh: float) -> Tuple[List, np.ndarray]:
+    """Fallback subprocess inference for when YOLO dependencies aren't in main environment"""
     try:
         # Encode image to base64
         image_b64 = encode_image_to_base64(image)
         
         # Get paths
-        script_path = os.path.join(os.path.dirname(__file__), "..", "local_yolo_inference.py")
+        script_path = os.path.join(os.path.dirname(__file__), "..", "utils", "local_yolo_inference.py")
         
         # Look for separate YOLO environment
         yolo_env_path = os.path.join(os.path.dirname(__file__), "..", "yolo_env")
@@ -129,12 +155,9 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # --- API and Model Config ---
-API_KEY = "mDauQAfDrFWieIsSqti6"
-MODEL_ID_DEFAULT = "pbe-detection/4"
-
 @st.cache_resource(show_spinner=False)
 def get_rf_client() -> InferenceHTTPClient:
-    return InferenceHTTPClient(api_url="https://detect.roboflow.com", api_key=API_KEY)
+    return InferenceHTTPClient(api_url=ROBOFLOW_API_URL, api_key=ROBOFLOW_API_KEY)
 
 def apply_nms(preds: List[Dict], conf_thresh: float, overlap_thresh: float) -> List[Dict]:
     boxes, confidences, idxs = [], [], []
@@ -224,12 +247,9 @@ def calculate_metrics(detections: List[Dict]) -> Dict:
 with st.sidebar:
     st.header("⚙️ Detection Parameters")
     # Model selection
-    model_options = ["ppe-factory-bmdcj/2", "pbe-detection/4", "safety-pyazl/1"]
+    model_options = API_MODELS.copy()
     if LOCAL_MODEL_AVAILABLE:
         model_options.append("best.pt (Local)")
-        st.info(f"✅ Local model found at: {LOCAL_MODEL_PATH}")
-    else:
-        st.warning("⚠️ Local model not found - using API models only")
     
     model_id = st.selectbox(
         "🎯 Model Selection",

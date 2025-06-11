@@ -5,6 +5,9 @@
 test_*.py
 *_test.py
 
+# Environment variables (sensitive data)
+.env
+
 ### Linux ###
 *~
 
@@ -92,5 +95,8 @@ __pycache__/
 
 # Local YOLO environment (created by setup script)
 yolo_env/
+
+# Ignore .env files
+.env
 
 # End of https://www.toptal.com/developers/gitignore/api/macos,venv,linux,visualstudiocode
