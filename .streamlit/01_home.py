@@ -72,6 +72,16 @@ st.markdown("""
         border: 2px solid #dee2e6;
     }
     
+    /* Force content card text to be black */
+    .content-card h3, .content-card p, .content-card div {
+        color: #212529 !important;
+    }
+    
+    /* Override global white text for content cards */
+    .content-card * {
+        color: #212529 !important;
+    }
+    
     /* Metric cards */
     .metric-card {
         background: #ffffff !important;
@@ -121,7 +131,7 @@ col1, col2, col3 = st.columns(3)
 with col1:
     st.markdown("""
     <div class="content-card">
-        <h3 style="color: #667eea !important;">🖼️ Image Analysis</h3>
+        <h3 style="color: #212529 !important;">🖼️ Image Analysis</h3>
         <p style="color: #212529 !important;">Upload images for instant PPE compliance detection</p>
         <div style="color: #28a745 !important; font-weight: bold;">
             ✓ Fast inference<br>
@@ -136,7 +146,7 @@ with col1:
 with col2:
     st.markdown("""
     <div class="content-card">
-        <h3 style="color: #667eea !important;">🎥 Video Processing</h3>
+        <h3 style="color: #212529 !important;">🎥 Video Processing</h3>
         <p style="color: #212529 !important;">Process video files frame-by-frame for safety analysis</p>
         <div style="color: #28a745 !important; font-weight: bold;">
             ✓ Batch processing<br>
@@ -151,7 +161,7 @@ with col2:
 with col3:
     st.markdown("""
     <div class="content-card">
-        <h3 style="color: #667eea !important;">📹 Live Detection</h3>
+        <h3 style="color: #212529 !important;">📹 Live Detection</h3>
         <p style="color: #212529 !important;">Real-time webcam monitoring for safety compliance</p>
         <div style="color: #28a745 !important; font-weight: bold;">
             ✓ Real-time processing<br>
