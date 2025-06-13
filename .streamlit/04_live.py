@@ -54,12 +54,42 @@ def load_yolo_model():
         st.error(f"❌ Failed to load YOLO model: {e}")
         return None
 
+# Load audio file
+@st.cache_data
+def load_audio_bytes():
+    """Load emergency alarm audio file using correct path resolution"""
+    # Try multiple possible paths to find the audio file
+    from pathlib import Path
+    possible_paths = [
+        Path(__file__).parent.parent / "assets" / "emergency-alarm.mp3",  # From .streamlit/ to project root
+        Path(__file__).parent / "assets" / "emergency-alarm.mp3",        # If assets is in .streamlit/
+        Path("assets") / "emergency-alarm.mp3",                          # Relative to current directory
+        Path("/Users/michaeladebayo/Documents/Simplon/brief_projects/security-checker/assets/emergency-alarm.mp3")  # Absolute path
+    ]
+    
+    for audio_path in possible_paths:
+        try:
+            if audio_path.exists():
+                with open(audio_path, "rb") as f:
+                    audio_bytes = f.read()
+                    file_size = audio_path.stat().st_size / 1024  # KB
+                    return audio_bytes, file_size
+        except Exception as e:
+            continue
+    
+    # If no path worked, return None silently
+    return None, 0
+
 # Page configuration
 st.set_page_config(
     page_title="Live PPE Detection – Smart Safety Monitor",
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# Initialize session state for audio (must be before sidebar)
+if 'audio_enabled' not in st.session_state:
+    st.session_state.audio_enabled = False
 
 # CSS for consistent styling
 st.markdown("""
@@ -221,10 +251,13 @@ st.markdown("""
         display: inline-block;
         width: 10px;
         height: 10px;
-        background: #4caf50;
+        background: #f44336;  /* Red by default */
         border-radius: 50%;
-        animation: blink 1s infinite;
         margin-right: 5px;
+    }
+    .live-indicator.active {
+        background: #4caf50;  /* Green when active */
+        animation: blink 1s infinite;
     }
     @keyframes blink {
         0%, 50% { opacity: 1; }
@@ -276,64 +309,25 @@ def get_display_name(class_name: str) -> str:
     return name_mapping.get(class_name, class_name)
 
 def calculate_compliance_percentage(detections: List) -> float:
-    """Calculate PPE compliance percentage based on current detections.
-    Hybrid approach: Uses positive PPE detections OR negative violations 
-    to ensure consistent percentage calculations regardless of detection type."""
+    """Calculate PPE compliance percentage based on presence of all 3 PPE items (same as video.py)"""
     if not detections:
         return 100.0  # No detections = assume compliant
 
-    # Count people using the raw YOLO class name
-    people_count = sum(1 for d in detections if d['class'] == 'Person')
+    # Count positive PPE detections using normalized class names (same as video.py)
+    helmet_count = sum(1 for d in detections if d['class'].lower() in ['hardhat', 'helmet'])
+    mask_count = sum(1 for d in detections if d['class'].lower() == 'mask')
+    vest_count = sum(1 for d in detections if d['class'].lower() == 'safety vest')
+    
+    # Calculate compliance for each PPE item (1 if present, 0 if not)
+    helmet_compliance = 1 if helmet_count > 0 else 0
+    mask_compliance = 1 if mask_count > 0 else 0
+    vest_compliance = 1 if vest_count > 0 else 0
+    
+    # Total compliance is sum of individual compliances divided by 3
+    total_compliance = (helmet_compliance + mask_compliance + vest_compliance) / 3 * 100
+    
+    return round(total_compliance, 1)
 
-    if people_count == 0:
-        return 100.0  # No people detected
-
-    # Count positive PPE detections using raw YOLO class names
-    helmets = sum(1 for d in detections if d['class'] in ['Hardhat', 'Helmet'])
-    masks = sum(1 for d in detections if d['class'] == 'Mask')
-    safety_vests = sum(1 for d in detections if d['class'] == 'Safety Vest')
-
-    # Count negative PPE detections (violations)
-    no_helmets = sum(1 for d in detections if d['class'] in ['NO-Hardhat', 'NO-Helmet'])
-    no_masks = sum(1 for d in detections if d['class'] == 'NO-Mask')
-    no_safety_vests = sum(1 for d in detections if d['class'] == 'NO-Safety Vest')
-
-    # Hybrid logic: try positive PPE first, fallback to violations if no positive PPE
-    total_positive_ppe = helmets + masks + safety_vests
-    total_violations = no_helmets + no_masks + no_safety_vests
-
-    if total_positive_ppe > 0:
-        ppe_items_present = calculated_compliance_percentage(
-            helmets, masks, safety_vests
-        )
-        compliance = (ppe_items_present / 3.0) * 100
-    elif total_violations > 0:
-        violation_categories = (
-            calculated_compliance_percentage(
-                no_helmets, no_masks, no_safety_vests
-            )
-        )
-        # Inverse calculation: 3 violations = 0%, 2 violations = 33.3%, 1 violation = 66.7%, 0 violations = 100%
-        compliance = ((3 - violation_categories) / 3.0) * 100
-    else:
-        # No PPE or violations detected - assume compliant
-        compliance = 100.0
-
-    return round(compliance, 1)
-
-
-# calculate_compliance_percentage function
-def calculated_compliance_percentage(arg0, arg1, arg2):
-        # Calculate based on positive PPE items (original logic)
-    result = 0
-    if arg0 > 0:
-        result += 1
-    if arg1 > 0:
-        result += 1
-    if arg2 > 0:
-        result += 1
-
-    return result
 
 def run_yolo_inference(image: np.ndarray, conf_thresh: float, model) -> Tuple[List, np.ndarray]:
     """Run YOLO inference on image with improved bounding box precision"""
@@ -444,6 +438,7 @@ class PPEDetectionTransformer(VideoTransformerBase):
     
     def recv(self, frame):
         """New recv method to replace deprecated transform method"""
+        import time
         try:
             img = frame.to_ndarray(format="bgr24")
             self.frame_count += 1
@@ -452,8 +447,10 @@ class PPEDetectionTransformer(VideoTransformerBase):
             if self.frame_count % 30 == 0:
                 print(f"Frame {self.frame_count}: Model available: {self.model is not None}, Shape: {img.shape}")
             
-            # SIMPLIFIED DETECTION: Run detection every few frames instead of time-based
-            should_detect = (self.frame_count % max(1, int(self.detection_interval * 10)) == 0 and 
+            # IMPROVED DETECTION: Run detection more frequently for better real-time metrics
+            # Run detection every 5-10 frames instead of every few seconds for responsive metrics
+            detection_frame_interval = max(5, int(self.detection_interval * 5))  # Much more frequent
+            should_detect = (self.frame_count % detection_frame_interval == 0 and 
                            self.model is not None) or self.instant_detect
             
             if should_detect and self.model is not None:
@@ -529,8 +526,11 @@ class PPEDetectionTransformer(VideoTransformerBase):
                                 model_classes = len(self.model.names) if hasattr(self.model, 'names') else 0
                                 print(f"NO DETECTIONS: Image shape {img.shape}, Model classes: {model_classes}")
                         
-                        # Update current detections
+                        # Update current detections - ALWAYS update, even if empty
                         self.current_detections = detections
+                        
+                        # Add timestamp to track when detections were last updated
+                        self.last_detection_time = time.time()
                         
                         return av.VideoFrame.from_ndarray(annotated, format="bgr24")
                     
@@ -545,10 +545,14 @@ class PPEDetectionTransformer(VideoTransformerBase):
                     return av.VideoFrame.from_ndarray(img, format="bgr24")
             
             else:
-                # Show persistent detections
+                # Show persistent detections, but clear them if too old
+                current_time = time.time()
+                detection_age = current_time - getattr(self, 'last_detection_time', current_time)
+                max_detection_age = 3.0  # Clear detections after 3 seconds of no new detections
+                
                 annotated = img.copy()
                 
-                if self.current_detections:
+                if self.current_detections and detection_age < max_detection_age:
                     for detection in self.current_detections:
                         # Draw bounding box
                         x1 = int(detection["x"] - detection["width"]/2)
@@ -563,6 +567,9 @@ class PPEDetectionTransformer(VideoTransformerBase):
                         label = f"{detection['display_name']} {detection['confidence']:.2f}"
                         cv2.putText(annotated, label, (x1, y1-10), 
                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                elif detection_age >= max_detection_age:
+                    # Clear old detections to ensure metrics reflect current state
+                    self.current_detections = []
                 
                 return av.VideoFrame.from_ndarray(annotated, format="bgr24")
             
@@ -590,23 +597,19 @@ with st.sidebar:
     persistence_frames = st.slider("Detection Persistence (frames)", 5, 60, TRANSFORMER_PERSISTENCE_FRAMES, 5,
                                  help="How many frames to keep showing detections")
     
-    # Add reset button for troubleshooting
-    if st.button("🔄 Reset Detection System", help="Clear cache and restart detection"):
-        if 'transformer' in st.session_state:
-            del st.session_state.transformer
-        st.rerun()
-        
-    # Add instant detection toggle
-    instant_detect = st.checkbox("⚡ Instant Detection", value=False, 
-                                help="Run detection on every frame (may slow down stream)")
+    st.markdown("---")
+    st.header("🔊 Audio Alerts")
     
-    # Add debug counting toggle
-    debug_counts = st.checkbox("🔢 Debug Counting", value=False,
-                              help="Show detailed counting debug information")
-    if debug_counts:
-        st.session_state.debug_counts = True
-    else:
-        st.session_state.debug_counts = False
+    # Audio toggle control
+    audio_enabled = st.toggle(
+        "Enable Audio Alerts", 
+        value=st.session_state.audio_enabled,
+        help="Automatically play alarm sound when violations are detected"
+    )
+    
+    # Update session state
+    if audio_enabled != st.session_state.audio_enabled:
+        st.session_state.audio_enabled = audio_enabled
 
 # Load model
 model = load_yolo_model()
@@ -625,10 +628,6 @@ st.session_state.transformer.set_conf_thresh(conf_thresh)
 st.session_state.transformer.set_detection_interval(detection_interval)
 if hasattr(st.session_state.transformer, 'set_persistence_frames'):
     st.session_state.transformer.set_persistence_frames(persistence_frames)
-
-# Add instant detection settings
-if hasattr(st.session_state.transformer, 'instant_detect'):
-    st.session_state.transformer.instant_detect = instant_detect
 
 # Main content
 st.markdown("### 📹 Live PPE Detection Stream")
@@ -657,7 +656,6 @@ with webcam_col:
             transformer.set_conf_thresh(conf_thresh)
             transformer.set_detection_interval(detection_interval)
             transformer.set_persistence_frames(persistence_frames)
-            transformer.instant_detect = instant_detect
             
             # Store reference in session state for statistics access
             st.session_state.active_transformer = transformer
@@ -690,35 +688,12 @@ with webcam_col:
                 transformer.set_conf_thresh(conf_thresh)
                 transformer.set_detection_interval(detection_interval)
                 transformer.set_persistence_frames(persistence_frames)
-                transformer.instant_detect = instant_detect
-                
-                model_status = "✅ Ready" if hasattr(transformer, 'model') and transformer.model is not None else "❌ No Model"
-                st.info(f"🔧 Detection transformer: {model_status}")
-                
-                # Debug info
-                if hasattr(transformer, 'frame_count'):
-                    st.caption(f"Frames processed: {transformer.frame_count}")
-                if hasattr(transformer, 'current_detections'):
-                    st.caption(f"Current detections: {len(transformer.current_detections) if transformer.current_detections else 0}")
             else:
                 st.warning("⚠️ Detection transformer not ready")
         elif webrtc_ctx.state.signalling:
             st.info("🟡 Connecting to camera...")
         else:
             st.info("⚪ Camera stream stopped. Click 'Start' to begin.")
-            
-        # Add immediate test button
-        if st.button("🚀 Force Detection Test", help="Test detection on current frame"):
-            if webrtc_ctx.video_processor and hasattr(webrtc_ctx.video_processor, 'model'):
-                transformer = webrtc_ctx.video_processor
-                if transformer.model:
-                    st.success("Model is available in transformer!")
-                    st.write(f"Confidence threshold: {transformer.conf_thresh}")
-                    st.write(f"Model classes: {len(transformer.model.names)}")
-                else:
-                    st.error("Model not available in transformer")
-            else:
-                st.warning("Transformer not ready for testing")
 
     except Exception as e:
         st.error(f"❌ WebRTC Error: {str(e)}")
@@ -747,16 +722,30 @@ with webcam_col:
 with stats_col:
     st.markdown('<div class="stats-panel">', unsafe_allow_html=True)
     
-    # Statistics Header
-    st.markdown("""
-    <div class="stats-header">
-        <h3><span class="live-indicator"></span>📊 Live PPE Statistics</h3>
-    </div>
+    # Statistics Header - indicator changes based on camera status
+    camera_active = 'webrtc_ctx' in locals() and webrtc_ctx.state.playing
+    indicator_class = "live-indicator active" if camera_active else "live-indicator"
+    
+    st.markdown(f"""
+        <h3><span class="{indicator_class}"></span>📊 Live PPE Statistics</h3>
     """, unsafe_allow_html=True)
     
     # Manual refresh button
     if st.button("🔄 Refresh Stats", key="refresh_stats", help="Force refresh statistics"):
         st.rerun()
+    
+    # Auto-refresh mechanism for live stats
+    if 'webrtc_ctx' in locals() and webrtc_ctx.state.playing:
+        # Add auto-refresh when camera is active
+        import time
+        if 'last_refresh' not in st.session_state:
+            st.session_state.last_refresh = time.time()
+        
+        # Auto-refresh every 0.3 seconds when camera is active for more responsive updates
+        current_time = time.time()
+        if current_time - st.session_state.last_refresh > 0.3:
+            st.session_state.last_refresh = current_time
+            st.rerun()
     
     # Live metrics display - Use both webrtc transformer and session state
     active_transformer = None
@@ -768,7 +757,8 @@ with stats_col:
         active_transformer = st.session_state.transformer
     
     if active_transformer and hasattr(active_transformer, 'current_detections'):
-        detections = active_transformer.current_detections
+        # Force fresh read of detections to avoid caching issues
+        detections = getattr(active_transformer, 'current_detections', [])
         
         # Only show detailed statistics if there are actual detections
         if detections and len(detections) > 0:
@@ -776,8 +766,9 @@ with stats_col:
             # Calculate and show compliance
             compliance = calculate_compliance_percentage(detections)
             
-            # Show compliance alert or success  
-            if compliance < 60:
+            # Show compliance alert or success - use consistent threshold
+            is_non_compliant = compliance < 50
+            if is_non_compliant:
                 st.markdown(f"""
                 <div class="compliance-alert">
                     🚨 COMPLIANCE ALERT 🚨<br>
@@ -812,66 +803,14 @@ with stats_col:
                 if display_name in ppe_counts:
                     ppe_counts[display_name] += 1
             
-            # Debug compliance calculation if debug mode is enabled
-            if st.session_state.get('debug_counts', False):
-                st.write("**Debug: Hybrid Compliance Calculation**")
-                
-                # Positive PPE counts
-                helmets = ppe_counts["Helmet"]
-                masks = ppe_counts["Mask"] 
-                safety_vests = ppe_counts["Safety Vest"]
-                total_positive = helmets + masks + safety_vests
-                
-                # Negative PPE counts (violations)
-                no_helmets = ppe_counts["NO-Helmet"]
-                no_masks = ppe_counts["NO-Mask"]
-                no_safety_vests = ppe_counts["NO-Safety Vest"]
-                total_violations = no_helmets + no_masks + no_safety_vests
-                
-                st.write(f"**Positive PPE:** Helmet={helmets}, Mask={masks}, Safety Vest={safety_vests} (Total: {total_positive})")
-                st.write(f"**Violations:** NO-Helmet={no_helmets}, NO-Mask={no_masks}, NO-Safety Vest={no_safety_vests} (Total: {total_violations})")
-                
-                # Show which calculation method was used
-                if total_positive > 0:
-                    positive_categories = sum([1 for x in [helmets, masks, safety_vests] if x > 0])
-                    st.write(f"**Method:** Positive PPE calculation ({positive_categories}/3 categories = {compliance:.1f}%)")
-                elif total_violations > 0:
-                    violation_categories = sum([1 for x in [no_helmets, no_masks, no_safety_vests] if x > 0])
-                    st.write(f"**Method:** Violations calculation ({violation_categories}/3 violations = {compliance:.1f}%)")
-                else:
-                    st.write(f"**Method:** No PPE/violations detected = {compliance:.1f}%")
-                    
-                st.write(f"**Raw detections:** {[d['class'] for d in detections]}")
-            
-            # Show quick metrics
-            people = ppe_counts["Person"]
-            violations = ppe_counts["NO-Helmet"] + ppe_counts["NO-Mask"] + ppe_counts["NO-Safety Vest"]
-            
-            st.markdown(f"""
-            <div class="quick-metrics">
-                <div class="quick-metric">
-                    <div class="metric-value">👥 {people}</div>
-                    <div class="metric-label">People Detected</div>
-                </div>
-                <div class="quick-metric">
-                    <div class="metric-value">⚠️ {violations}</div>
-                    <div class="metric-label">Violations</div>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-            
             # Display detailed statistics
             st.markdown("**Detection Results:**")
             
-            # Define icons and categories for PPE-related classes only (exclude Safety Cone)
+            # Define icons and categories for positive PPE only (same as video.py)
             ppe_categories = [
-                ("Person", "👤", "neutral"),
-                ("Helmet", "⛑️", "positive"),
+                ("Helmet", "🪖", "positive"),
                 ("Mask", "😷", "positive"),
-                ("Safety Vest", "🦺", "positive"),
-                ("NO-Helmet", "🚫⛑️", "negative"),
-                ("NO-Mask", "🚫😷", "negative"),
-                ("NO-Safety Vest", "🚫🦺", "negative")
+                ("Safety Vest", "🦺", "positive")
             ]
             
             for category, icon, status in ppe_categories:
@@ -885,14 +824,40 @@ with stats_col:
                     <span class="ppe-count">{count}</span>
                 </div>
                 """, unsafe_allow_html=True)
+            
+            # Add audio alert if enabled and compliance is low (same threshold as alert)
+            if st.session_state.get('audio_enabled', False) and is_non_compliant:
+                audio_bytes, _ = load_audio_bytes()
+                if audio_bytes:
+                    import base64
+                    # Create hidden audio element with loop for continuous play
+                    audio_base64 = base64.b64encode(audio_bytes).decode()
+                    
+                    st.markdown(f"""
+                    <audio autoplay loop style="display: none;">
+                        <source src="data:audio/mp3;base64,{audio_base64}" type="audio/mp3">
+                        Your browser does not support the audio element.
+                    </audio>
+                    """, unsafe_allow_html=True)
         else:
-            # Show a simple waiting message when no detections
-            st.markdown("""
-            <div style="text-align: center; padding: 2rem; color: #666;">
-                📹 <strong>Camera Active</strong><br>
-                <em>Waiting for detections...</em>
-            </div>
-            """, unsafe_allow_html=True)
+            # Check if camera is actually active
+            camera_playing = 'webrtc_ctx' in locals() and webrtc_ctx.state.playing
+            if camera_playing:
+                # Camera is active but no detections yet
+                st.markdown("""
+                <div style="text-align: center; padding: 2rem; color: #666;">
+                    📹 <strong>Camera Active</strong><br>
+                    <em>Waiting for detections...</em>
+                </div>
+                """, unsafe_allow_html=True)
+            else:
+                # Camera not active
+                st.markdown("""
+                <div style="text-align: center; padding: 2rem; color: #666;">
+                    📹 <strong>Camera Not Active</strong><br>
+                    <em>Waiting for detections to compute stats...</em>
+                </div>
+                """, unsafe_allow_html=True)
     else:
         st.info("📷 Start camera stream to see live statistics")
     
@@ -901,4 +866,3 @@ with stats_col:
 # Footer
 st.markdown("---")
 st.markdown("<div style='text-align:center;color:#6c757d;padding:1rem;'>🛡️ Smart Safety Monitor - Live PPE Detection System</div>", unsafe_allow_html=True)
-

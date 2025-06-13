@@ -740,11 +740,8 @@ def process_video_with_local_model(input_path: str, output_path: str, conf_thres
 with st.sidebar:
     st.header("⚙️ Detection Parameters")
     
-    # Show model info
-    if LOCAL_MODEL_AVAILABLE and LOCAL_MODEL_PATH:
-        st.success("🎯 Local YOLO Model Ready")
-        st.info(f"📁 Model: {os.path.basename(LOCAL_MODEL_PATH)}")
-    else:
+    # Check model availability
+    if not LOCAL_MODEL_AVAILABLE or not LOCAL_MODEL_PATH:
         st.error("❌ Local model not found")
         st.stop()
     

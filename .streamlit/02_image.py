@@ -40,7 +40,7 @@ def load_yolo_model():
         return None
     try:
         model = YOLO(LOCAL_MODEL_PATH, verbose=False)
-        st.success(f"✅ YOLO model loaded from {LOCAL_MODEL_PATH}")
+        # Model loaded silently - no success message needed
         return model
     except Exception as e:
         st.error(f"❌ Failed to load YOLO model: {e}")
@@ -350,11 +350,8 @@ def run_yolo_inference(image: np.ndarray, conf_thresh: float, model) -> Tuple[Li
 with st.sidebar:
     st.header("⚙️ Detection Parameters")
     
-    # Show model info
-    if LOCAL_MODEL_AVAILABLE and LOCAL_MODEL_PATH:
-        st.success("🎯 Local YOLO Model Ready")
-        st.info(f"📁 Model: {os.path.basename(LOCAL_MODEL_PATH)}")
-    else:
+    # Check model availability
+    if not LOCAL_MODEL_AVAILABLE or not LOCAL_MODEL_PATH:
         st.error("❌ Local model not found")
         st.stop()
     
