@@ -176,7 +176,3 @@ The system uses direct YOLO model integration for optimal performance:
 - Allow camera permissions in browser
 - Try different browsers (Chrome/Firefox recommended)
 - Restart the Streamlit application
-
-## 📄 License
-
-This project is for educational and demonstration purposes. 
