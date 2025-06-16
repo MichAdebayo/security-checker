@@ -9,7 +9,7 @@ st.set_page_config(
 )
 
 # Fix the logo path - use absolute path from current file location
-logo_path = os.path.join(os.path.dirname(__file__), "..", "images", "logo.webp")
+logo_path = os.path.join(os.path.dirname(__file__), "..", "assets", "logo.webp")
 
 # CSS for consistent styling with dark/light theme compatibility
 st.markdown("""
