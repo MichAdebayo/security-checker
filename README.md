@@ -37,7 +37,7 @@ yolo_env\Scripts\activate     # On Windows
 pip install -r requirements.txt
 
 # Run the application
-streamlit run .streamlit/01_home.py
+streamlit run .streamlit/app.py
 ```
 
 ## 📁 Project Structure
