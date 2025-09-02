@@ -1,5 +1,9 @@
 # Smart Safety Monitor 🛡️
 
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/cce73e01-0330-4afd-be18-30ffefbc02e2" alt="Smart Safety Monitor" width="400"/>
+</p>
+
 **Local YOLO PPE Detection System** - Privacy-First Computer Vision
 
 A comprehensive Personal Protective Equipment (PPE) detection system built with Streamlit and a locally trained YOLO model. Features real-time webcam monitoring, video processing, and image analysis with complete privacy protection through offline processing.
