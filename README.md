@@ -1,7 +1,7 @@
 # Smart Safety Monitor 🛡️
 
 <p align="center">
-  <img src="https://github.com/user-attachments/assets/cce73e01-0330-4afd-be18-30ffefbc02e2" alt="Smart Safety Monitor" width="400"/>
+  <img src="https://github.com/user-attachments/assets/4851ec6e-f09b-4ebe-85cc-aa493290fb61" alt="Smart Safety Monitor" width="400"/>
 </p>
 
 **Local YOLO PPE Detection System** - Privacy-First Computer Vision
